@@ -12,10 +12,10 @@ import tracemalloc
 import psutil
 
 REBUILD_INTERVAL = 1000
-SAVE_INTERVAL = 2500
+SAVE_INTERVAL = 15000
 BASEDIR = os.path.dirname(os.path.abspath(__file__))
 # input_path = os.path.join(BASEDIR,'..','data','owt_train.txt')
-input_path = os.path.join(BASEDIR,'..','tests','fixtures','tinystories_sample_5M.txt')
+input_path = os.path.join(BASEDIR,'..','data','TinyStoriesV2-GPT4-train.txt')
 
 class _RevKey:
     """包装一个可比较的值，反转比较方向（用于让字节内容更大的优先）。"""
@@ -84,25 +84,28 @@ def vocab_init():
 def build_pre_freqs(path: str, num_workers: int, special_tokens: list[str]):
     boundry_token = special_tokens[0].encode('utf-8')
     with open(path, "rb") as f:
-        boundaries = find_chunk_boundaries(f, num_workers, boundry_token)
+        boundaries = find_chunk_boundaries(f, 64, boundry_token)
 
     tasks = [(path, s, e, special_tokens) for s, e in zip(boundaries[:-1], boundaries[1:])]
-
+    pre_freqs = Counter()
     # chunksize=1 即可，因为每个 task 本身就很重
     with Pool(processes=num_workers) as pool:
-        counters = pool.map(pretokenize_chunk, tasks, chunksize=1)
+        for counter in pool.imap_unordered(pretokenize_chunk, tasks, chunksize=1):
+            pre_freqs.update(counter)
+            # 显式释放子进程传来的 Counter 对象（可选，但有助于 GC）
+            del counter 
 
     # 合并
-    pre_freqs = Counter()
-    for c in counters:
-        pre_freqs.update(c)
     return pre_freqs
 
 
 def train_bpe(input_path, vocab_size, special_tokens):
     PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
     vocab = vocab_init()
-    pre_freqs = build_pre_freqs(input_path, min(os.cpu_count() or 1, 16), special_tokens)
+    t_pretokenizer0 = time.time()
+    pre_freqs = build_pre_freqs(input_path, 4, special_tokens)
+    t_pretokenizer1 = time.time()
+    print(f'预分词用时：{(t_pretokenizer1 - t_pretokenizer0) *1000:.4f}ms')
     #pre_freqs: bytes -> freq
     heap = []
     freqs = {}
@@ -111,7 +114,7 @@ def train_bpe(input_path, vocab_size, special_tokens):
     ptw = {}
     w_id = 0
     # tracemalloc.start()
-    t_pretokenizer0 = time.time()
+    t_pretokenizer2 = time.time()
     for bs, pf in pre_freqs.items():
         ids = tuple(bs)
         words[w_id] = (pf, ids)
@@ -123,8 +126,8 @@ def train_bpe(input_path, vocab_size, special_tokens):
     for pair,count in freqs.items():
         pa, pb = pair >> 20, pair & ((1 << 20) - 1)
         heapq.heappush(heap, (-count, _RevKey((vocab[pa], vocab[pb])), pair))
-    t_pretokenizer1 = time.time()
-    print(f'预分词用时：{(t_pretokenizer1 - t_pretokenizer0) *1000:.4f}ms')
+    t_pretokenizer3 = time.time()
+    print(f'转换用时：{(t_pretokenizer3 - t_pretokenizer2) *1000:.4f}ms')
     del pre_freqs
 
 
@@ -133,17 +136,18 @@ def train_bpe(input_path, vocab_size, special_tokens):
     for iter in range(merge_time):
         if iter % REBUILD_INTERVAL == 0 and iter != 0:
             t_rebuild0 = time.time()
+            heap = []
             for pair,count in freqs.items():
-                pa, pb = p >> 20, p & ((1 << 20) - 1)
+                pa, pb = pair >> 20, pair & ((1 << 20) - 1)
                 heap.append((-count, _RevKey((vocab[pa], vocab[pb])), pair))
             heapq.heapify(heap)
             t_rebuild1 = time.time()
             print(f'重建堆用时:{(t_rebuild1 - t_rebuild0) * 1000}ms')
-        if iter % SAVE_INTERVAL == 0 and iter != 0:
+        """ if iter % SAVE_INTERVAL == 0 and iter != 0:
             t_save0 = time.time()
             save_checkpoint(os.path.join(BASEDIR,'checkpoint.pkl'),words,merges,vocab,iter,w_id)
             t_save1 = time.time()
-            print(f'保存检查点用时:{(t_save1 - t_save0) * 1000:.4f}ms')
+            print(f'保存检查点用时:{(t_save1 - t_save0) * 1000:.4f}ms') """
         idx = 256 + iter
         #不重新创建freqs和ptw，而是只维护增量
         t_eit0 = time.time()
@@ -172,7 +176,7 @@ def train_bpe(input_path, vocab_size, special_tokens):
             i = 0
             new_word = []
             freq,word= words.pop(word_id)
-            old_pairs = Counter([(x << 20) | y for x,y in zip(word,word[1:])])
+            old_pairs = Counter((x << 20) | y for x,y in zip(word,word[1:]))
             while i < len(word):
                 if i < len(word) - 1 and word[i] == a and word[i+1] == b:
                     new_word.append(idx)
@@ -180,7 +184,7 @@ def train_bpe(input_path, vocab_size, special_tokens):
                 else:
                     new_word.append(word[i])
                     i += 1
-            new_pairs = Counter([(x << 20) | y for x,y in zip(new_word,new_word[1:])])
+            new_pairs = Counter((x << 20) | y for x,y in zip(new_word,new_word[1:]))
             for p in set(old_pairs) | set(new_pairs):
                 oc = old_pairs.get(p,0)
                 nc = new_pairs.get(p,0)
@@ -219,8 +223,14 @@ def train_bpe(input_path, vocab_size, special_tokens):
 
 def save_merge(merge,path):
     with open(path + '.merge.txt','w',encoding='utf-8') as f:
+        btu = bytes_to_unicode()
         for a, b in merge:
-            f.write(f'{a} {b}\n')
+            unia, unib = '', ''
+            for ca in a:
+                unia += btu[ca]
+            for cb in b:
+                unib += btu[cb]
+            f.write(f'{unia} {unib}\n')
 
 def save_vocab(vocab, path):
     b2u = bytes_to_unicode()
@@ -234,12 +244,11 @@ def save_vocab(vocab, path):
 if __name__ == '__main__':
     t0 = time.time()
    
-    vocab, merges = train_bpe(input_path, 500, ['<|endoftext|>'])
+    vocab, merges = train_bpe(input_path, 10000, ['<|endoftext|>'])
     t1 = time.time()
     print(f'used time:{(t1-t0) * 1000:.4f}ms')
-    print(merges)
-    #  save_merge(merges,os.path.join(BASEDIR,'owt'))
-    #  save_vocab(vocab,os.path.join(BASEDIR,'owt'))
+    save_merge(merges,os.path.join(BASEDIR,'tns'))
+    save_vocab(vocab,os.path.join(BASEDIR,'tns'))
     #p = psutil.Process(os.getpid())
     #print(f"peak RSS = {p.memory_info().peak_wset / 1024**3:.2f} GB")
     # print(merges)
