@@ -1,50 +1,11 @@
-# CS336 Spring 2025 Assignment 1: Basics
+# CS336: Language Modeling from Scratch
 
-For a full description of the assignment, see the assignment handout at
-[cs336_assignment1_basics.pdf](./cs336_assignment1_basics.pdf)
+斯坦福 [CS336](https://stanford-cs336.github.io/) 的作业实现，按作业分目录。
+讲义、官方测试和 `pyproject.toml` 都跟着各自的作业放在同一个目录里。
 
-If you see any issues with the assignment handout or code, please feel free to
-raise a GitHub issue or open a pull request with a fix.
+| 目录 | 内容 | 状态 |
+|---|---|---|
+| [`assignment1-basics/`](assignment1-basics/) | BPE 分词器、Transformer LM、训练与采样 | 完成 |
+| [`assignment2-systems/`](assignment2-systems/) | profiling、Triton FlashAttention-2、DDP / FSDP | 进行中 |
 
-## Setup
-
-### Environment
-We manage our environments with `uv` to ensure reproducibility, portability, and ease of use.
-Install `uv` [here](https://github.com/astral-sh/uv#installation) (recommended), or run `pip install uv`/`brew install uv`.
-We recommend reading a bit about managing projects in `uv` [here](https://docs.astral.sh/uv/guides/projects/#managing-dependencies) (you will not regret it!).
-
-You can now run any code in the repo using
-```sh
-uv run <python_file_path>
-```
-and the environment will be automatically solved and activated when necessary.
-
-### Run unit tests
-
-
-```sh
-uv run pytest
-```
-
-Initially, all tests should fail with `NotImplementedError`s.
-To connect your implementation to the tests, complete the
-functions in [./tests/adapters.py](./tests/adapters.py).
-
-### Download data
-Download the TinyStories data and a subsample of OpenWebText
-
-``` sh
-mkdir -p data
-cd data
-
-wget https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStoriesV2-GPT4-train.txt
-wget https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStoriesV2-GPT4-valid.txt
-
-wget https://huggingface.co/datasets/stanford-cs336/owt-sample/resolve/main/owt_train.txt.gz
-gunzip owt_train.txt.gz
-wget https://huggingface.co/datasets/stanford-cs336/owt-sample/resolve/main/owt_valid.txt.gz
-gunzip owt_valid.txt.gz
-
-cd ..
-```
-
+环境用 `uv` 管理，跑法和测试命令见 [`assignment1-basics/README.md`](assignment1-basics/README.md)。
